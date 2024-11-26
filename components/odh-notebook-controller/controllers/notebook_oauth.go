@@ -19,6 +19,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"math/big"
 	"reflect"
 
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -39,6 +41,14 @@ const (
 	// taken from https://catalog.redhat.com/software/containers/openshift4/ose-oauth-proxy/5cdb2133bed8bd5717d5ae64?image=66cefc14401df6ff4664ec43&architecture=amd64&container-tabs=overview
 	// and kept in sync with the manifests here and in ClusterServiceVersion metadata of opendatahub operator
 	OAuthProxyImage = "registry.redhat.io/openshift4/ose-oauth-proxy@sha256:4f8d66597feeb32bb18699326029f9a71a5aca4a57679d636b876377c2e95695"
+
+	// Strings used in secret generation
+	letterRunes = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+	// Complexity of generated secrets, this will be stored in a const for now, but in the future
+	// there is the possibility of creating a specific file to manage secrets, change the size of
+	// the complexity if required, etc. For now, a complexity of 16 will suffice.
+	SECRET_DEFAULT_COMPLEXITY = 16
 )
 
 type OAuthConfig struct {
@@ -212,6 +222,16 @@ func NewNotebookOAuthSecret(notebook *nbv1.Notebook) *corev1.Secret {
 // NewNotebookOAuthClientSecret defines the desired OAuth client secret object
 func NewNotebookOAuthClientSecret(notebook *nbv1.Notebook) *corev1.Secret {
 	// Generate the client secret for the OAuth proxy
+	randomValue := make([]byte, SECRET_DEFAULT_COMPLEXITY)
+	for i := 0; i < SECRET_DEFAULT_COMPLEXITY; i++ {
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(letterRunes))))
+		if err != nil {
+			fmt.Printf("Error generating secret: %v\n", err)
+		}
+		randomValue[i] = letterRunes[num.Int64()]
+	}
+
+	// Create a Kubernetes secret to store the cookie secret
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      notebook.Name + "-oauth-client",
@@ -219,12 +239,9 @@ func NewNotebookOAuthClientSecret(notebook *nbv1.Notebook) *corev1.Secret {
 			Labels: map[string]string{
 				"notebook-name": notebook.Name,
 			},
-			Annotations: map[string]string{
-				"secret-generator.opendatahub.io/name":               "secret",
-				"secret-generator.opendatahub.io/type":               "random",
-				"secret-generator.opendatahub.io/complexity":         "32",
-				"secret-generator.opendatahub.io/oauth-client-route": notebook.Name,
-			},
+		},
+		StringData: map[string]string{
+			"secret": string(randomValue),
 		},
 	}
 }
