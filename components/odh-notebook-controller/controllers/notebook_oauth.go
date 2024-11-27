@@ -234,10 +234,16 @@ func NewNotebookOAuthClientSecret(notebook *nbv1.Notebook) *corev1.Secret {
 	// Create a Kubernetes secret to store the cookie secret
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      notebook.Name + "-oauth-client",
+			Name:      notebook.Name + "-oauth-client-generated",
 			Namespace: notebook.Namespace,
 			Labels: map[string]string{
 				"notebook-name": notebook.Name,
+			},
+			Annotations: map[string]string{
+				"secret-generator.opendatahub.io/name":               "secret",
+				"secret-generator.opendatahub.io/type":               "random",
+				"secret-generator.opendatahub.io/complexity":         "16",
+				"secret-generator.opendatahub.io/oauth-client-route": notebook.Name,
 			},
 		},
 		StringData: map[string]string{
