@@ -30,11 +30,13 @@ import (
 	oauthv1 "github.com/openshift/api/oauth/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	apierrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
@@ -275,8 +277,20 @@ func (r *OpenshiftNotebookReconciler) ReconcileOAuthSecret(notebook *nbv1.Notebo
 func (r *OpenshiftNotebookReconciler) ReconcileOAuthClient(notebook *nbv1.Notebook, ctx context.Context) error {
 	log := logf.FromContext(ctx)
 
+	// Before handling the OAuth creation method, we should check if the Notebook parent object has
+	// been marked for deletion.
+	finalizationInProgress, err := r.HandleOAuthClientFinalizer(notebook, ctx)
+	if err != nil {
+		return err
+	}
+
+	// If finalization is in progress, then stop the reconciler here, as OAuthClient do not need to be created
+	if finalizationInProgress {
+		return nil
+	}
+
 	route := &routev1.Route{}
-	err := r.Get(ctx, types.NamespacedName{
+	err = r.Get(ctx, types.NamespacedName{
 		Name:      notebook.Name,
 		Namespace: notebook.Namespace,
 	}, route)
@@ -296,6 +310,65 @@ func (r *OpenshiftNotebookReconciler) ReconcileOAuthClient(notebook *nbv1.Notebo
 	}
 
 	return nil
+}
+
+func (r *OpenshiftNotebookReconciler) HandleOAuthClientFinalizer(notebook *nbv1.Notebook, ctx context.Context) (bool, error) {
+	// Define your finalizer name
+	finalizerName := "mycrd.finalizers.example.com/oauthclient"
+
+	// Check if object is being deleted
+	if notebook.GetDeletionTimestamp() != nil {
+		// Object is being deleted
+		if controllerutil.ContainsFinalizer(notebook, finalizerName) {
+			// Run finalizer logic - clean up the OAuthClient
+			if err := r.cleanupOAuthClient(notebook, ctx); err != nil {
+				return true, err
+			}
+
+			// Remove finalizer
+			controllerutil.RemoveFinalizer(notebook, finalizerName)
+			if err := r.Update(ctx, notebook); err != nil {
+				return true, err
+			}
+		}
+		// Return true to indicate finalization is in progress
+		return true, nil
+	}
+
+	// Add finalizer if it doesn't exist yet
+	if !controllerutil.ContainsFinalizer(notebook, finalizerName) {
+		controllerutil.AddFinalizer(notebook, finalizerName)
+		if err := r.Update(ctx, notebook); err != nil {
+			return true, err
+		}
+		// Return true to indicate we're setting up finalization
+		return true, nil
+	}
+
+	// Return false to indicate normal reconciliation should proceed
+	return false, nil
+}
+
+// cleanupOAuthClient will delete an OAuthClient object in OpenShift based on the Notebook name. An important note is that
+// as OAuthClient objects are not namespaced objects - they are cluster objects - we need to search properly for them to do
+// a clean up, without overloading OpenShift resources.
+func (r *OpenshiftNotebookReconciler) cleanupOAuthClient(notebook *nbv1.Notebook, ctx context.Context) error {
+	// Name of the OAuthClient based on the Notebook name
+	oauthClientName := fmt.Sprintf("%s-%s-%s", notebook.Name, notebook.Namespace, "oauth-client")
+
+	oauthClient := &oauthv1.OAuthClient{}
+	err := r.Client.Get(ctx, types.NamespacedName{
+		Name: oauthClientName,
+	}, oauthClient)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// OAuthClient was already deleted, so stop the reconciler
+			return nil
+		}
+		return err
+	}
+
+	return r.Client.Delete(ctx, oauthClient)
 }
 
 func (r *OpenshiftNotebookReconciler) createSecret(notebook *nbv1.Notebook, ctx context.Context, desiredSecret *corev1.Secret) error {
@@ -332,6 +405,40 @@ func (r *OpenshiftNotebookReconciler) createSecret(notebook *nbv1.Notebook, ctx 
 	}
 
 	return nil
+}
+
+// OAuthClientFinalizer handles the finalizer logic for OAuthClient resources
+func (r *OpenshiftNotebookReconciler) OAuthClientFinalizer(notebook *nbv1.Notebook, ctx context.Context) (bool, error) {
+	// Name of the finalizer that will run to check if the Notebook object has been deleted.
+	finalizerName := "notebooks.kubeflow.org/oauthclient"
+
+	// Check if object is being deleted
+	if notebook.GetDeletionTimestamp() != nil {
+		// Object is being deleted
+		if controllerutil.ContainsFinalizer(notebook, finalizerName) {
+			// Clean up the OAuthClient object
+			if err := r.cleanupOAuthClient(notebook, ctx); err != nil {
+				return false, err
+			}
+
+			// Remove finalizer
+			controllerutil.RemoveFinalizer(notebook, finalizerName)
+			if err := r.Update(ctx, notebook); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	}
+
+	// Add finalizer if it doesn't exist
+	if !controllerutil.ContainsFinalizer(notebook, finalizerName) {
+		controllerutil.AddFinalizer(notebook, finalizerName)
+		if err := r.Update(ctx, notebook); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // NewNotebookOAuthRoute defines the desired OAuth route object
