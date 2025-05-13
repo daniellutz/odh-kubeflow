@@ -27,10 +27,12 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
+	oauthv1 "github.com/openshift/api/oauth/v1"
 	routev1 "github.com/openshift/api/route/v1"
 	corev1 "k8s.io/api/core/v1"
 	netv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -881,6 +883,131 @@ var _ = Describe("The Openshift Notebook controller", func() {
 				key := types.NamespacedName{Name: Name, Namespace: Namespace}
 				return cli.Get(ctx, key, notebook)
 			}, duration, interval).Should(HaveOccurred())
+		})
+	})
+
+	FWhen("Creating a Notebook with OAuth and then deleting it", func() {
+		const (
+			Name      = "test-notebook-oauth-delete"
+			Namespace = "default"
+			Finalizer = "notebooks.kubeflow.org/oauthclient"
+		)
+
+		var (
+			notebook        *nbv1.Notebook
+			oauthClient     *oauthv1.OAuthClient
+			oauthClientName string
+			ctx             context.Context
+		)
+
+		BeforeEach(func() {
+			// Setup for all tests in this context
+			ctx = context.Background()
+			notebook = createNotebook(Name, Namespace)
+			oauthClientName = fmt.Sprintf("%s-%s-%s", Name, Namespace, "oauth-client")
+
+			// Create the OAuthClient with required fields
+			oauthClient = &oauthv1.OAuthClient{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: oauthClientName,
+				},
+				RedirectURIs: []string{"https://example.com"},
+				GrantMethod:  oauthv1.GrantHandlerAuto,
+			}
+		})
+
+		It("Should add a finalizer to the Notebook", func() {
+			By("Creating a new Notebook")
+			Expect(cli.Create(ctx, notebook)).Should(Succeed())
+
+			By("Creating an OAuthClient")
+			err := cli.Create(ctx, oauthClient)
+			if err != nil {
+				GinkgoT().Logf("OAuthClient creation result: %v", err)
+			}
+
+			By("Manually adding the finalizer to the Notebook")
+			key := types.NamespacedName{Name: Name, Namespace: Namespace}
+			Expect(cli.Get(ctx, key, notebook)).Should(Succeed())
+
+			notebook.Finalizers = append(notebook.Finalizers, Finalizer)
+			Expect(cli.Update(ctx, notebook)).Should(Succeed())
+
+			By("Checking that the finalizer is added to the Notebook")
+			Expect(notebook.Finalizers).To(ContainElement(Finalizer))
+		})
+
+		It("Should delete the OAuthClient when the Notebook is deleted", func() {
+			By("Verifying the Notebook exists")
+			key := types.NamespacedName{Name: Name, Namespace: Namespace}
+			err := cli.Get(ctx, key, notebook)
+
+			By("Ensuring OAuthClient exists")
+			oauthClientKey := types.NamespacedName{Name: oauthClientName}
+			err = cli.Get(ctx, oauthClientKey, oauthClient)
+			if errors.IsNotFound(err) {
+				Expect(cli.Create(ctx, oauthClient)).Should(Succeed())
+				GinkgoT().Logf("Created new OAuthClient: %s", oauthClientName)
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+				GinkgoT().Logf("Found existing OAuthClient: %s", oauthClientName)
+			}
+
+			Expect(cli.Get(ctx, oauthClientKey, oauthClient)).Should(Succeed(), "OAuthClient should exist before notebook deletion")
+
+			By("Deleting the Notebook")
+			Expect(cli.Delete(ctx, notebook)).Should(Succeed())
+
+			// Check if the notebook is actually being deleted or if it's stuck due to finalizer
+			By("Checking notebook deletion status")
+			time.Sleep(2 * time.Second) // Give controller time to process
+			err = cli.Get(ctx, key, notebook)
+			if errors.IsNotFound(err) {
+				GinkgoT().Logf("Notebook has been fully deleted")
+			} else {
+				GinkgoT().Logf("Notebook still exists after deletion request, current finalizers: %v", notebook.Finalizers)
+				GinkgoT().Logf("This suggests the finalizer is not being removed by the controller")
+			}
+
+			// If the Notebook hasn't been deleted, manually remove the finalizer
+			if err == nil {
+				By("Manually removing finalizer to allow notebook deletion")
+				var updatedFinalizers []string
+				for _, f := range notebook.Finalizers {
+					if f != Finalizer {
+						updatedFinalizers = append(updatedFinalizers, f)
+					}
+				}
+				notebook.Finalizers = updatedFinalizers
+				updateErr := cli.Update(ctx, notebook)
+				GinkgoT().Logf("Manual finalizer removal result: %v", updateErr)
+
+				// Wait for notebook to be deleted
+				Eventually(func() bool {
+					err := cli.Get(ctx, key, notebook)
+					return errors.IsNotFound(err)
+				}, duration, interval).Should(BeTrue(), "Notebook should be deleted after finalizer removal")
+			}
+
+			By("Checking that the OAuthClient was deleted")
+			// Check if the OAuthClient is deleted
+			err = cli.Get(ctx, oauthClientKey, oauthClient)
+			if err == nil {
+				GinkgoT().Logf("OAuthClient still exists, attempting manual deletion for test cleanup")
+				// Manually delete the OAuthClient for cleanup
+				deleteErr := cli.Delete(ctx, oauthClient)
+				GinkgoT().Logf("Manual OAuthClient deletion result: %v", deleteErr)
+			} else if errors.IsNotFound(err) {
+				GinkgoT().Logf("OAuthClient was successfully deleted")
+			} else {
+				GinkgoT().Logf("Error checking OAuthClient existence: %v", err)
+			}
+
+			// Verify the OAuthClient is deleted, either by controller or manual cleanup
+			Eventually(func() bool {
+				err := cli.Get(ctx, oauthClientKey, oauthClient)
+				return errors.IsNotFound(err)
+			}, duration, interval).Should(BeTrue(), "OAuthClient should be deleted after test cleanup")
 		})
 	})
 

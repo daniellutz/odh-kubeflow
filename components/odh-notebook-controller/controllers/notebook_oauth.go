@@ -313,19 +313,15 @@ func (r *OpenshiftNotebookReconciler) ReconcileOAuthClient(notebook *nbv1.Notebo
 }
 
 func (r *OpenshiftNotebookReconciler) HandleOAuthClientFinalizer(notebook *nbv1.Notebook, ctx context.Context) (bool, error) {
-	// Define your finalizer name
-	finalizerName := "mycrd.finalizers.example.com/oauthclient"
+	finalizerName := "notebooks.kubeflow.org/oauthclient"
 
 	// Check if object is being deleted
 	if notebook.GetDeletionTimestamp() != nil {
-		// Object is being deleted
 		if controllerutil.ContainsFinalizer(notebook, finalizerName) {
-			// Run finalizer logic - clean up the OAuthClient
 			if err := r.cleanupOAuthClient(notebook, ctx); err != nil {
 				return true, err
 			}
 
-			// Remove finalizer
 			controllerutil.RemoveFinalizer(notebook, finalizerName)
 			if err := r.Update(ctx, notebook); err != nil {
 				return true, err
@@ -405,40 +401,6 @@ func (r *OpenshiftNotebookReconciler) createSecret(notebook *nbv1.Notebook, ctx 
 	}
 
 	return nil
-}
-
-// OAuthClientFinalizer handles the finalizer logic for OAuthClient resources
-func (r *OpenshiftNotebookReconciler) OAuthClientFinalizer(notebook *nbv1.Notebook, ctx context.Context) (bool, error) {
-	// Name of the finalizer that will run to check if the Notebook object has been deleted.
-	finalizerName := "notebooks.kubeflow.org/oauthclient"
-
-	// Check if object is being deleted
-	if notebook.GetDeletionTimestamp() != nil {
-		// Object is being deleted
-		if controllerutil.ContainsFinalizer(notebook, finalizerName) {
-			// Clean up the OAuthClient object
-			if err := r.cleanupOAuthClient(notebook, ctx); err != nil {
-				return false, err
-			}
-
-			// Remove finalizer
-			controllerutil.RemoveFinalizer(notebook, finalizerName)
-			if err := r.Update(ctx, notebook); err != nil {
-				return false, err
-			}
-		}
-		return true, nil
-	}
-
-	// Add finalizer if it doesn't exist
-	if !controllerutil.ContainsFinalizer(notebook, finalizerName) {
-		controllerutil.AddFinalizer(notebook, finalizerName)
-		if err := r.Update(ctx, notebook); err != nil {
-			return false, err
-		}
-		return true, nil
-	}
-	return false, nil
 }
 
 // NewNotebookOAuthRoute defines the desired OAuth route object
