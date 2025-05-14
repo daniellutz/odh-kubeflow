@@ -358,13 +358,16 @@ func (r *OpenshiftNotebookReconciler) cleanupOAuthClient(notebook *nbv1.Notebook
 	}, oauthClient)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// OAuthClient was already deleted, so stop the reconciler
 			return nil
 		}
 		return err
 	}
 
-	return r.Client.Delete(ctx, oauthClient)
+	err = r.Client.Delete(ctx, oauthClient)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (r *OpenshiftNotebookReconciler) createSecret(notebook *nbv1.Notebook, ctx context.Context, desiredSecret *corev1.Secret) error {
