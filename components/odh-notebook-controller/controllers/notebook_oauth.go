@@ -363,7 +363,7 @@ func (r *OpenshiftNotebookReconciler) cleanupOAuthClient(notebook *nbv1.Notebook
 		return err
 	}
 
-	err = r.Client.Delete(ctx, oauthClient)
+	err = r.Delete(ctx, oauthClient)
 	if err != nil {
 		return err
 	}
